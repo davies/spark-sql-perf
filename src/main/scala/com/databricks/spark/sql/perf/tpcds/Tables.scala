@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.parquet // This is a hack until parquet has better support for partitioning.
+package com.databricks.spark.sql.perf.tpcds
 
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -37,47 +37,39 @@ import org.apache.spark.sql.types.{AtomicType, StringType, StructField, StructTy
 import parquet.hadoop.ParquetOutputFormat
 import parquet.hadoop.util.ContextUtil
 
+class Tables(sqlContext: SQLContext, dsdgenDir: String, scaleFactor: Int) extends Serializable {
+  import sqlContext.implicits._
 
-case class TPCDSTableForTest(
-    table: Table,
-    baseDir: String,
-    scaleFactor: Int,
-    dsdgenDir: String,
-    @transient sqlContext: SQLContext,
-    maxRowsPerPartitions: Int = 20 * 1000 * 1000)
-  extends TableForTest(table, baseDir, sqlContext) with Serializable with SparkHadoopMapReduceUtil {
-
-  @transient val sparkContext = sqlContext.sparkContext
-
+  def sparkContext = sqlContext.sparkContext
   val dsdgen = s"$dsdgenDir/dsdgen"
 
-  override def generate(): Unit = {
-    val partitions = table.tableType match {
-      case PartitionedTable(_) => scaleFactor
-      case _ => 1
-    }
+  case class Table(name: String, partitionColumns: Seq[String], fields: StructField*) {
+    val schema = StructType(fields)
+    val partitions = if (partitionColumns.isEmpty) 1 else 100
 
-    val generatedData = {
-      sparkContext.parallelize(1 to partitions, partitions).flatMap { i =>
-        val localToolsDir = if (new java.io.File(dsdgen).exists) {
-          dsdgenDir
-        } else if (new java.io.File(s"/$dsdgen").exists) {
-          s"/$dsdgenDir"
-        } else {
-          sys.error(s"Could not find dsdgen at $dsdgen or /$dsdgen. Run install")
+    def df = {
+      val generatedData = {
+        sparkContext.parallelize(1 to partitions, partitions).flatMap { i =>
+          val localToolsDir = if (new java.io.File(dsdgen).exists) {
+            dsdgenDir
+          } else if (new java.io.File(s"/$dsdgen").exists) {
+            s"/$dsdgenDir"
+          } else {
+            sys.error(s"Could not find dsdgen at $dsdgen or /$dsdgen. Run install")
+          }
+
+          val parallel = if (partitions > 1) s"-parallel $partitions -child $i" else ""
+          val commands = Seq(
+            "bash", "-c",
+            s"cd $localToolsDir && ./dsdgen -table $name -filter Y -scale $scaleFactor $parallel")
+          println(commands)
+          commands.lines
         }
-
-        val parallel = if (partitions > 1) s"-parallel $partitions -child $i" else ""
-        val commands = Seq(
-          "bash", "-c",
-          s"cd $localToolsDir && ./dsdgen -table ${table.name} -filter Y -scale $scaleFactor $parallel")
-        println(commands)
-        commands.lines
       }
-    }
 
-    generatedData.setName(s"${table.name}, sf=$scaleFactor, strings")
+      generatedData.setName(s"$name, sf=$scaleFactor, strings")
 
+<<<<<<< HEAD
     val rows = generatedData.mapPartitions { iter =>
       val currentRow = new Array[Any](schema.fields.size)
       iter.map { l =>
@@ -85,19 +77,30 @@ case class TPCDSTableForTest(
           currentRow(i) = f
         }
         new GenericRow(currentRow): Row
+=======
+      val rows = generatedData.mapPartitions { iter =>
+        val currentRow = new GenericMutableRow(schema.fields.size)
+        iter.map { l =>
+          (0 until schema.fields.length).foreach(currentRow.setNullAt)
+          l.split("\\|", -1).zipWithIndex.dropRight(1).foreach { case (f, i) => currentRow(i) = f}
+          currentRow: Row
+        }
+>>>>>>> e046705e7f37e55ca777caa68b5d9b07e54f05db
       }
-    }
 
-    val stringData =
-      sqlContext.createDataFrame(
-        rows,
-        StructType(schema.fields.map(f => StructField(f.name, StringType))))
+      val stringData =
+        sqlContext.createDataFrame(
+          rows,
+          StructType(schema.fields.map(f => StructField(f.name, StringType))))
 
-    val convertedData = {
-      val columns = schema.fields.map { f =>
-        val columnName = new ColumnName(f.name)
-        columnName.cast(f.dataType).as(f.name)
+      val convertedData = {
+        val columns = schema.fields.map { f =>
+          val columnName = new ColumnName(f.name)
+          columnName.cast(f.dataType).as(f.name)
+        }
+        stringData.select(columns: _*)
       }
+<<<<<<< HEAD
       stringData.select(columns: _*)
     }
 
@@ -197,12 +200,12 @@ case class TPCDSTableForTest(
         val fs = FileSystem.get(new java.net.URI(outputDir), new Configuration())
         fs.create(new Path(s"$outputDir/_SUCCESS")).close()
       case _ => convertedData.write.mode("overwrite").parquet(outputDir)
+=======
+
+      convertedData
+>>>>>>> e046705e7f37e55ca777caa68b5d9b07e54f05db
     }
   }
-}
-
-case class Tables(sqlContext: SQLContext) {
-  import sqlContext.implicits._
 
   val tables = Seq(
     /* This is another large table that we don't build yet.
@@ -213,7 +216,7 @@ case class Tables(sqlContext: SQLContext) {
       'inv_warehouse_sk     .int,
       'inv_quantity_on_hand .int),*/
     Table("store_sales",
-      PartitionedTable("ss_sold_date_sk"),
+      partitionColumns = "ss_sold_date_sk" :: Nil,
       'ss_sold_date_sk      .int,
       'ss_sold_time_sk      .int,
       'ss_item_sk           .int,
@@ -238,7 +241,7 @@ case class Tables(sqlContext: SQLContext) {
       'ss_net_paid_inc_tax  .decimal(7,2),
       'ss_net_profit        .decimal(7,2)),
     Table("customer",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'c_customer_sk             .int,
       'c_customer_id             .string,
       'c_current_cdemo_sk        .int,
@@ -258,7 +261,7 @@ case class Tables(sqlContext: SQLContext) {
       'c_email_address           .string,
       'c_last_review_date        .string),
     Table("customer_address",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'ca_address_sk             .int,
       'ca_address_id             .string,
       'ca_street_number          .string,
@@ -273,7 +276,7 @@ case class Tables(sqlContext: SQLContext) {
       'ca_gmt_offset             .decimal(5,2),
       'ca_location_type          .string),
     Table("customer_demographics",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'cd_demo_sk                .int,
       'cd_gender                 .string,
       'cd_marital_status         .string,
@@ -284,7 +287,7 @@ case class Tables(sqlContext: SQLContext) {
       'cd_dep_employed_count     .int,
       'cd_dep_college_count      .int),
     Table("date_dim",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'd_date_sk                 .int,
       'd_date_id                 .string,
       'd_date                    .string,
@@ -314,14 +317,14 @@ case class Tables(sqlContext: SQLContext) {
       'd_current_quarter         .string,
       'd_current_year            .string),
     Table("household_demographics",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'hd_demo_sk                .int,
       'hd_income_band_sk         .int,
       'hd_buy_potential          .string,
       'hd_dep_count              .int,
       'hd_vehicle_count          .int),
     Table("item",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'i_item_sk                 .int,
       'i_item_id                 .string,
       'i_rec_start_date          .string,
@@ -345,7 +348,7 @@ case class Tables(sqlContext: SQLContext) {
       'i_manager_id              .int,
       'i_product_name            .string),
     Table("promotion",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       'p_promo_sk                .int,
       'p_promo_id                .string,
       'p_start_date_sk           .int,
@@ -366,7 +369,7 @@ case class Tables(sqlContext: SQLContext) {
       'p_purpose                 .string,
       'p_discount_active         .string),
     Table("store",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       's_store_sk                .int,
       's_store_id                .string,
       's_rec_start_date          .string,
@@ -397,7 +400,7 @@ case class Tables(sqlContext: SQLContext) {
       's_gmt_offset              .decimal(5,2),
       's_tax_precentage          .decimal(5,2)),
     Table("time_dim",
-      UnpartitionedTable,
+      partitionColumns = Nil,
       't_time_sk                 .int,
       't_time_id                 .string,
       't_time                    .int,

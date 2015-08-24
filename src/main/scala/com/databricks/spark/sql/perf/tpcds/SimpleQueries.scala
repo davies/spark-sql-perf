@@ -14,11 +14,14 @@
  * limitations under the License.
  */
 
-package com.databricks.spark.sql.perf.tpcds.queries
+package com.databricks.spark.sql.perf.tpcds
 
-import com.databricks.spark.sql.perf.Query
+import com.databricks.spark.sql.perf.Benchmark
 
-object SimpleQueries {
+trait SimpleQueries extends Benchmark {
+
+  import ExecutionMode._
+
    val q7Derived = Seq(
      ("q7-simpleScan",
        """
@@ -136,7 +139,7 @@ object SimpleQueries {
               |limit 100
               |-- end query 1 in stream 0 using template query7.tpl
             """.stripMargin)
-   ).map {
-     case (name, sqlText) => Query(name = name, sqlText = sqlText, description = "", collectResults = false)
+   ).map { case (name, sqlText) =>
+     Query(name = name, sqlText = sqlText, description = "", executionMode = ForeachResults)
    }
 }
