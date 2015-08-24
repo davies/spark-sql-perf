@@ -33,7 +33,7 @@ import org.apache.hadoop.mapreduce.{OutputCommitter, TaskAttemptContext, RecordW
 import org.apache.spark.SerializableWritable
 import org.apache.spark.sql.{Column, ColumnName, SQLContext}
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.apache.spark.sql.types.{AtomicType, StringType, StructField, StructType}
 import parquet.hadoop.ParquetOutputFormat
 import parquet.hadoop.util.ContextUtil
 
@@ -79,11 +79,12 @@ case class TPCDSTableForTest(
     generatedData.setName(s"${table.name}, sf=$scaleFactor, strings")
 
     val rows = generatedData.mapPartitions { iter =>
-      val currentRow = new GenericMutableRow(schema.fields.size)
+      val currentRow = new Array[Any](schema.fields.size)
       iter.map { l =>
-        (0 until schema.fields.length).foreach(currentRow.setNullAt)
-        l.split("\\|", -1).zipWithIndex.dropRight(1).foreach { case (f, i) => currentRow(i) = f}
-        currentRow: Row
+        l.split("\\|", -1).zipWithIndex.dropRight(1).foreach { case (f, i) =>
+          currentRow(i) = f
+        }
+        new GenericRow(currentRow): Row
       }
     }
 
@@ -108,7 +109,7 @@ case class TPCDSTableForTest(
         val job = new Job(sqlContext.sparkContext.hadoopConfiguration)
 
         val writeSupport =
-          if (schema.fields.map(_.dataType).forall(_.isPrimitive)) {
+          if (schema.fields.map(_.dataType).forall(_.isInstanceOf[AtomicType])) {
             classOf[org.apache.spark.sql.parquet.MutableRowWriteSupport]
           } else {
             classOf[org.apache.spark.sql.parquet.RowWriteSupport]
@@ -195,7 +196,7 @@ case class TPCDSTableForTest(
         }
         val fs = FileSystem.get(new java.net.URI(outputDir), new Configuration())
         fs.create(new Path(s"$outputDir/_SUCCESS")).close()
-      case _ => convertedData.saveAsParquetFile(outputDir)
+      case _ => convertedData.write.mode("overwrite").parquet(outputDir)
     }
   }
 }
